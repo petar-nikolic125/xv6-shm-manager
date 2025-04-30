@@ -176,91 +176,128 @@ growproc(int n)
 // Create a new process copying p as the parent.
 // Sets up stack to return as if from system call.
 // Caller must set state of returned proc to RUNNABLE.
+// ---------------------------------------------------------------------
+// fork: create a new process duplicating the calling process.
+// ---------------------------------------------------------------------
 int
 fork(void)
 {
-	int i, pid;
-	struct proc *np;
-	struct proc *curproc = myproc();
+	int             i, pid;
+	struct proc    *np;
+	struct proc    *curproc = myproc();
 
-	// Allocate process.
-	if((np = allocproc()) == 0){
+	// Allocate the child process structure.
+	if ((np = allocproc()) == 0)
 		return -1;
-	}
 
-	// Copy process state from proc.
-	if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
+	// Duplicate the parent’s user address space.
+	if ((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0) {
 		kfree(np->kstack);
 		np->kstack = 0;
-		np->state = UNUSED;
+		np->state  = UNUSED;
 		return -1;
 	}
-	np->sz = curproc->sz;
+	np->sz     = curproc->sz;
 	np->parent = curproc;
-	*np->tf = *curproc->tf;
+	*np->tf    = *curproc->tf;
 
-	// Clear %eax so that fork returns 0 in the child.
+	// fork() returns 0 in the child.
 	np->tf->eax = 0;
 
-	for(i = 0; i < NOFILE; i++)
-		if(curproc->ofile[i])
+	// -------------------------------------------------------------
+	// File descriptors, cwd, process name (unchanged from original):
+	// -------------------------------------------------------------
+	for (i = 0; i < NOFILE; i++)
+		if (curproc->ofile[i])
 			np->ofile[i] = filedup(curproc->ofile[i]);
 	np->cwd = idup(curproc->cwd);
-
 	safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 
+	// -------------------------------------------------------------
+	// NEW: inherit shared-memory descriptors.
+	// -------------------------------------------------------------
+	for (i = 0; i < SHM_MAX_DESCS; i++) {
+		if (curproc->shm[i].obj) {
+			struct shmobj *o = curproc->shm[i].obj;
+
+			// bump refcnt under object lock
+			acquire(&o->lock);
+			o->refcnt++;
+			release(&o->lock);
+
+			// shallow copy of the descriptor (pointer, flags, va)
+			np->shm[i] = curproc->shm[i];
+		} else {
+			// clear unused slot
+			np->shm[i].obj   = 0;
+			np->shm[i].flags = 0;
+			np->shm[i].va    = 0;
+		}
+	}
+
+	// -------------------------------------------------------------
+	// Make child runnable.
+	// -------------------------------------------------------------
 	pid = np->pid;
-
 	acquire(&ptable.lock);
-
 	np->state = RUNNABLE;
-
 	release(&ptable.lock);
 
 	return pid;
 }
 
-// Exit the current process.  Does not return.
-// An exited process remains in the zombie state
-// until its parent calls wait() to find out it exited.
 void
 exit(void)
 {
 	struct proc *curproc = myproc();
 	struct proc *p;
-	int fd;
+	int          fd;
 
-	if(curproc == initproc)
+	if (curproc == initproc)
 		panic("init exiting");
 
-	// Close all open files.
-	for(fd = 0; fd < NOFILE; fd++){
-		if(curproc->ofile[fd]){
+	// -------------------------------------------------------------
+	// Close all *file* descriptors.
+	// -------------------------------------------------------------
+	for (fd = 0; fd < NOFILE; fd++) {
+		if (curproc->ofile[fd]) {
 			fileclose(curproc->ofile[fd]);
 			curproc->ofile[fd] = 0;
 		}
 	}
 
+	// -------------------------------------------------------------
+	// NEW: close any still-open shared-memory descriptors.
+	// -------------------------------------------------------------
+	for (fd = 0; fd < SHM_MAX_DESCS; fd++) {
+		if (curproc->shm[fd].obj)
+			shm_close_desc(curproc, fd);      // internal helper in shm.c
+	}
+
+	// Release current working directory.
 	begin_op();
 	iput(curproc->cwd);
 	end_op();
 	curproc->cwd = 0;
 
+	// -------------------------------------------------------------
+	// Parent/child bookkeeping (unchanged from original xv6):
+	// -------------------------------------------------------------
 	acquire(&ptable.lock);
 
-	// Parent might be sleeping in wait().
+	// Wake parent if sleeping in wait().
 	wakeup1(curproc->parent);
 
-	// Pass abandoned children to init.
-	for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-		if(p->parent == curproc){
+	// Re-parent any orphaned children to init.
+	for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+		if (p->parent == curproc) {
 			p->parent = initproc;
-			if(p->state == ZOMBIE)
+			if (p->state == ZOMBIE)
 				wakeup1(initproc);
 		}
 	}
 
-	// Jump into the scheduler, never to return.
+	// Turn into a zombie and switch out.
 	curproc->state = ZOMBIE;
 	sched();
 	panic("zombie exit");

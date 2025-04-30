@@ -32,7 +32,7 @@ seginit(void)
 // Return the address of the PTE in page table pgdir
 // that corresponds to virtual address va.  If alloc!=0,
 // create any required page table pages.
-static pte_t *
+pte_t *
 walkpgdir(pde_t *pgdir, const void *va, int alloc)
 {
 	pde_t *pde;
@@ -57,7 +57,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned.
-static int
+int
 mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 {
 	char *a, *last;
@@ -216,6 +216,25 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
 	return 0;
 }
 
+void
+uvmunmap(pde_t *pgdir, void *va, int n, int do_free)
+{
+	char *a = (char *)PGROUNDDOWN((uint)va);
+	for (int i = 0; i < n; i++, a += PGSIZE) {
+		pte_t *pte = walkpgdir(pgdir, a, 0);
+		if (pte == 0 || (*pte & PTE_P) == 0)
+			continue;                       // nothing mapped here
+
+			if (do_free) {
+				uint pa = PTE_ADDR(*pte);
+				if (pa == 0)
+					panic("uvmunmap: pa 0");
+				kfree(P2V(pa));
+			}
+			*pte = 0;                         // clear PTE
+	}
+}
+
 // Allocate page tables and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 int
@@ -309,37 +328,52 @@ clearpteu(pde_t *pgdir, char *uva)
 		panic("clearpteu");
 	*pte &= ~PTE_U;
 }
-
-// Given a parent process's page table, create a copy
-// of it for a child.
-pde_t*
+// Given a parent process's page table, create a copy for a child.
+// Shared-memory pages (PTE_SH) are *not* duplicated: the PTE is cloned
+// with the same physical frame, so the child sees the same object.
+pde_t *
 copyuvm(pde_t *pgdir, uint sz)
 {
 	pde_t *d;
 	pte_t *pte;
-	uint pa, i, flags;
-	char *mem;
+	uint   pa, i, flags;
+	char  *mem;
 
-	if((d = setupkvm()) == 0)
+	// allocate a brand-new kernel page directory
+	if ((d = setupkvm()) == 0)
 		return 0;
-	for(i = 0; i < sz; i += PGSIZE){
-		if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+
+	// iterate over every user page in the parent
+	for (i = 0; i < sz; i += PGSIZE) {
+		if ((pte = walkpgdir(pgdir, (void *)i, 0)) == 0)
 			panic("copyuvm: pte should exist");
-		if(!(*pte & PTE_P))
+		if (!(*pte & PTE_P))
 			panic("copyuvm: page not present");
-		pa = PTE_ADDR(*pte);
+
+		pa    = PTE_ADDR(*pte);
 		flags = PTE_FLAGS(*pte);
-		if((mem = kalloc()) == 0)
+
+		// ---------- NEW BEHAVIOUR ----------
+		// If this is a shared page, just replicate the PTE.
+		if (flags & PTE_SH) {
+			if (mappages(d, (void *)i, PGSIZE, pa, flags) < 0)
+				goto bad;
+			continue;                        // next virtual page
+		}
+		// ---------- OLD BEHAVIOUR ----------
+
+		// allocate private copy for normal pages
+		if ((mem = kalloc()) == 0)
 			goto bad;
-		memmove(mem, (char*)P2V(pa), PGSIZE);
-		if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
+		memmove(mem, (char *)P2V(pa), PGSIZE);
+		if (mappages(d, (void *)i, PGSIZE, V2P(mem), flags) < 0) {
 			kfree(mem);
 			goto bad;
 		}
 	}
 	return d;
 
-bad:
+	bad:
 	freevm(d);
 	return 0;
 }

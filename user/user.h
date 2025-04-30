@@ -28,6 +28,11 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
+int  shm_open(char *name);
+int  shm_trunc(int shmfd, int size);
+int  shm_map(int shmfd, void **va, int flags);   // flags: O_RDONLY/O_RDWR
+int  shm_close(int shmfd);
+
 
 // ulib.c
 int stat(const char*, struct stat*);
