@@ -6,6 +6,7 @@
 #include "mmu.h"
 #include "proc.h"
 #include "file.h"
+#include "fcntl.h"    // <— pull in O_RDONLY/O_RDWR
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
@@ -339,11 +340,11 @@ copyuvm(pde_t *pgdir, uint sz)
 	uint   pa, i, flags;
 	char  *mem;
 
-	// allocate a brand-new kernel page directory
+	// 1) Brand‐new kernel page directory
 	if ((d = setupkvm()) == 0)
 		return 0;
 
-	// iterate over every user page in the parent
+	// 2) Copy ordinary user pages [0 .. sz)
 	for (i = 0; i < sz; i += PGSIZE) {
 		if ((pte = walkpgdir(pgdir, (void *)i, 0)) == 0)
 			panic("copyuvm: pte should exist");
@@ -353,16 +354,14 @@ copyuvm(pde_t *pgdir, uint sz)
 		pa    = PTE_ADDR(*pte);
 		flags = PTE_FLAGS(*pte);
 
-		// ---------- NEW BEHAVIOUR ----------
-		// If this is a shared page, just replicate the PTE.
+		// Shared‐memory pages get cloned (no private copy)
 		if (flags & PTE_SH) {
 			if (mappages(d, (void *)i, PGSIZE, pa, flags) < 0)
 				goto bad;
-			continue;                        // next virtual page
+			continue;
 		}
-		// ---------- OLD BEHAVIOUR ----------
 
-		// allocate private copy for normal pages
+		// Private pages: allocate+copy
 		if ((mem = kalloc()) == 0)
 			goto bad;
 		memmove(mem, (char *)P2V(pa), PGSIZE);
@@ -371,13 +370,31 @@ copyuvm(pde_t *pgdir, uint sz)
 			goto bad;
 		}
 	}
+
+	// 3) FIX ZA TEST 2 FIX ZA TEST 2
+	{
+		struct proc *cur = myproc();
+		for (int fd = 0; fd < SHM_MAX_DESCS; fd++) {
+			struct shmref *r = &cur->shm[fd];
+			if (r->obj && r->va) {
+				struct shmobj *o = r->obj;
+				int perm = PTE_U | PTE_SH | ((r->flags & O_RDWR) ? PTE_W : 0);
+				for (int pg = 0; pg < o->npages; pg++) {
+					uint cva = (uint)r->va + pg * PGSIZE;
+					if (mappages(d, (void*)cva, PGSIZE,
+						V2P(o->pages[pg]), perm) < 0)
+						goto bad;
+				}
+			}
+		}
+	}
+
 	return d;
 
 	bad:
 	freevm(d);
 	return 0;
 }
-
 // Map user virtual address to kernel address.
 char*
 uva2ka(pde_t *pgdir, char *uva)

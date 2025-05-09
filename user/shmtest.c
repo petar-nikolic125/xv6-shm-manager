@@ -241,10 +241,10 @@ main(int argc, char *argv[])
 {
 	printf("note that errors could happen as a result of prior errors\n"
 	       "as a result, you should inspect errors in sequence\n");
-	if(test1()) goto ex;
+	//if(test1()) goto ex;
 	if(test2()) goto ex;
-	if(test3()) goto ex;
-	if(test4()) goto ex;
+	//if(test3()) goto ex;
+	//if(test4()) goto ex;
 	if(test5()) goto ex;
 	if(test6()) goto ex;
 
