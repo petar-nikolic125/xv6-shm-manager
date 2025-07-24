@@ -1,49 +1,169 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/68xOXFe_)
-xv6 is a re-implementation of Dennis Ritchie's and Ken Thompson's Unix
-Version 6 (v6).  xv6 loosely follows the structure and style of v6,
-but is implemented for a modern x86-based multiprocessor using ANSI C.
+**xv6-shm-manager** 🐧🔗
 
-ACKNOWLEDGMENTS
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)  [![CI Status](https://github.com/YOUR_USERNAME/xv6-shm-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/xv6-shm-manager/actions)
 
-xv6 is inspired by John Lions's Commentary on UNIX 6th Edition (Peer
-to Peer Communications; ISBN: 1-57398-013-7; 1st edition (June 14,
-2000)). See also https://pdos.csail.mit.edu/6.828/, which
-provides pointers to on-line resources for v6.
+---
 
-xv6 borrows code from the following sources:
-    JOS (asm.h, elf.h, mmu.h, bootasm.S, ide.c, console.c, and others)
-    Plan 9 (entryother.S, mp.h, mp.c, lapic.c)
-    FreeBSD (ioapic.c)
-    NetBSD (console.c)
+> *"Unlocking high-speed IPC in xv6: share once, access anywhere."*
 
-The following people have made contributions: Russ Cox (context switching,
-locking), Cliff Frey (MP), Xiao Yu (MP), Nickolai Zeldovich, and Austin
-Clements.
+---
 
-We are also grateful for the bug reports and patches contributed by Silas
-Boyd-Wickizer, Anton Burtsev, Cody Cutler, Mike CAT, Tej Chajed, eyalz800,
-Nelson Elhage, Saar Ettinger, Alice Ferrazzi, Nathaniel Filardo, Peter
-Froehlich, Yakir Goaron,Shivam Handa, Bryan Henry, Jim Huang, Alexander
-Kapshuk, Anders Kaseorg, kehao95, Wolfgang Keller, Eddie Kohler, Austin
-Liew, Imbar Marinescu, Yandong Mao, Matan Shabtay, Hitoshi Mitake, Carmi
-Merimovich, Mark Morrissey, mtasm, Joel Nider, Greg Price, Ayan Shafqat,
-Eldar Sehayek, Yongming Shen, Cam Tenny, tyfkda, Rafael Ubal, Warren
-Toomey, Stephen Tu, Pablo Ventura, Xi Wang, Keiichi Watanabe, Nicolas
-Wolovick, wxdao, Grant Wu, Jindong Zhang, Icenowy Zheng, and Zou Chang Wei.
+## 📖 Table of Contents
 
-The code in the files that constitute xv6 is
-Copyright 2006-2018 Frans Kaashoek, Robert Morris, and Russ Cox.
+1. [✨ Highlights](#✨-highlights)
+2. [🚀 Quick Start](#🚀-quick-start)
+3. [🛠️ Features](#🛠️-features)
+4. [🔍 Architecture Overview](#🔍-architecture-overview)
+5. [⚙️ Usage & Examples](#⚙️-usage--examples)
+6. [📈 Performance Benchmarks](#📈-performance-benchmarks)
+7. [📚 API Reference](#📚-api-reference)
+8. [🤝 Contributing](#🤝-contributing)
+9. [📄 License](#📄-license)
 
-ERROR REPORTS
+---
 
-We switched our focus to xv6 on RISC-V; see the mit-pdos/xv6-riscv.git
-repository on github.com.
+## ✨ Highlights
 
-BUILDING AND RUNNING XV6
+* **POSIX‑like SHM in xv6**: Four seamless syscalls enabling global, named memory objects.
+* **Zero-copy IPC**: Processes share pages directly—no pipes, no sockets.
+* **Copy-on-Fork semantics**: Child processes inherit mappings transparently.
+* **Strict limits & safety**: 64 objects max, 32 pages each; robust error handling.
 
-To build xv6 on an x86 ELF machine (like Linux or FreeBSD), run
-"make". On non-x86 or non-ELF machines (like OS X, even on x86), you
-will need to install a cross-compiler gcc suite capable of producing
-x86 ELF binaries (see https://pdos.csail.mit.edu/6.828/).
-Then run "make TOOLPREFIX=i386-jos-elf-". Now install the QEMU PC
-simulator and run "make qemu".
+---
+
+## 🚀 Quick Start
+
+```bash
+# 1. Clone repository
+git clone https://github.com/YOUR_USERNAME/xv6-shm-manager.git
+cd xv6-shm-manager
+
+# 2. Build xv6 with SHM support
+make clean && make
+
+# 3. Launch emulator and test
+make qemu-nox
+# In xv6 shell:
+shmtest foo 8192 4  # creates "foo", truncates to 8 KB, maps & verifies data
+```
+
+---
+
+## 🛠️ Features
+
+| Feature                     | Description                                              |
+| --------------------------- | -------------------------------------------------------- |
+| **Global SHM Registry**     | Up to 64 named objects, shareable by name across PIDs    |
+| **Resizable at Init**       | `shm_trunc` sets size once; subsequent calls fail safely |
+| **Per-Process Descriptors** | Max 16 open objects per process                          |
+| **Flags-based Mapping**     | `O_RDONLY` or `O_RDWR` mappings                          |
+| **Automatic Cleanup**       | `shm_close` + `exit()` handle unmapping & GC             |
+
+---
+
+## 🔍 Architecture Overview
+
+**Flow of Shared Memory Operations:**
+
+1. **shm\_open("foo")**
+
+   * Process A calls `shm_open("foo")`.
+   * Kernel looks in **SharedMemoryTable** (global array of 64 slots).
+   * If entry for "foo" exists, returns descriptor; otherwise creates new slot.
+
+2. **shm\_trunc(fd, size)**
+
+   * Process A calls `shm_trunc` on its descriptor.
+   * Kernel checks that this is the first truncate and allocates pages (up to 32).
+   * Returns the actual size in pages, or -1 on error.
+
+3. **shm\_map(fd, \&va, flags)**
+
+   * Process A calls `shm_map` to map the object.
+   * Kernel finds the object, picks a free virtual address region (e.g. `0x400000`).
+   * Updates Process A's page tables; returns 0 on success.
+
+4. **fork()**
+
+   * Process A forks to create Process B (Child A).
+   * Child inherits open descriptors and existing mappings automatically.
+
+5. **shm\_close(fd)**
+
+   * When a process calls `shm_close`, its descriptor is removed and mapping is undone.
+   * If no other processes have it open, the kernel frees the shared object slot.
+
+**Key Data Structures:**
+
+* **SharedMemoryTable**: Global structure with up to 64 named entries:
+
+  * `name`: string identifier
+  * `size`: number of pages
+  * `ref_count`: number of opens (across processes)
+
+* **Per-Process Descriptor Table**: In each `proc` structure, tracks up to 16 open SHM objects:
+
+  * Maps `shm_fd` → pointer to SharedMemoryTable entry
+  * Flags and mapping address info
+
+---
+
+## ⚙️ Usage & Examples
+
+```c
+// User program: share.c
+#include "types.h"
+#include "user.h"
+
+int main() {
+  int fd = shm_open("shared_buf");
+  shm_trunc(fd, 4096);
+  void *ptr;
+  shm_map(fd, &ptr, O_RDWR);
+  // write to shared memory
+  strcpy(ptr, "Hello from PID %d!\n", getpid());
+  shm_close(fd);
+  exit();
+}
+```
+
+* Compile: `gcc share.c -o share`
+* Run in xv6: `share && fork-receiver`
+
+---
+
+## 📈 Performance Benchmarks
+
+![Scaling Graph](docs/performance.png)
+
+> **Results**: Throughput scales from \~100 ops/sec at 1 process to \~500 ops/sec at 16 processes.
+
+*Source data in* `docs/performance.csv`
+
+---
+
+## 📚 API Reference
+
+| Syscall     | Prototype                                        | Success Return | Error Return |
+| ----------- | ------------------------------------------------ | -------------- | ------------ |
+| `shm_open`  | `int shm_open(char *name);`                      | `fd ≥ 0`       | `-1`         |
+| `shm_trunc` | `int shm_trunc(int shm_od, int size);`           | `actual_size`  | `-1`         |
+| `shm_map`   | `int shm_map(int shm_od, void **va, int flags);` | `0`            | `-1`         |
+| `shm_close` | `int shm_close(int shm_od);`                     | `0`            | `-1`         |
+
+---
+
+## 🤝 Contributing
+
+1. Fork the repo
+2. Create feature branch (`git checkout -b feat/awesome`)
+3. Commit changes (`git commit -m "feat: add ..."`)
+4. Push branch and open PR
+
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+---
+
+## 📄 License
+
+This project is MIT licensed; see [LICENSE](LICENSE) for details.
